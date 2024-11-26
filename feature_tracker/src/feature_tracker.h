@@ -60,6 +60,8 @@ class FeatureTracker
     camodocal::CameraPtr m_camera;
     double cur_time;
     double prev_time;
+    cv::Ptr<cv::FastFeatureDetector> p_fast_feature_detector;
+
 
     static int n_id;
 };

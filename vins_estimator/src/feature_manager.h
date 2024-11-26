@@ -18,7 +18,7 @@ using namespace Eigen;
 class FeaturePerFrame
 {
   public:
-    FeaturePerFrame(const Eigen::Matrix<double, 7, 1> &_point, double td)
+    FeaturePerFrame(const Eigen::Matrix<double, 7, 1> &_point, double td, double _depth)
     {
         point.x() = _point(0);
         point.y() = _point(1);
@@ -27,6 +27,7 @@ class FeaturePerFrame
         uv.y() = _point(4);
         velocity.x() = _point(5); 
         velocity.y() = _point(6); 
+        depth = _depth;
         cur_td = td;
     }
     double cur_td;
@@ -39,6 +40,7 @@ class FeaturePerFrame
     MatrixXd A;
     VectorXd b;
     double dep_gradient;
+    double depth;
 };
 
 class FeaturePerId
@@ -52,6 +54,7 @@ class FeaturePerId
     bool is_outlier;
     bool is_margin;
     double estimated_depth;
+    int estimate_flag = 0;  // 0 initial; 1 by depth image; 2 by triangulate
     int solve_flag; // 0 haven't solve yet; 1 solve succ; 2 solve fail;
 
     Vector3d gt_p;
@@ -77,6 +80,7 @@ class FeatureManager
     int getFeatureCount();
 
     bool addFeatureCheckParallax(int frame_count, const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, double td);
+    bool addFeatureCheckParallaxLecar(int frame_count, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, double td);
     void debugShow();
     vector<pair<Vector3d, Vector3d>> getCorresponding(int frame_count_l, int frame_count_r);
 
@@ -86,12 +90,16 @@ class FeatureManager
     void clearDepth(const VectorXd &x);
     VectorXd getDepthVector();
     void triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[]);
+    void triangulateWithDepth(Vector3d Ps[], Vector3d _tic[], Matrix3d _ric[]);
     void removeBackShiftDepth(Eigen::Matrix3d marg_R, Eigen::Vector3d marg_P, Eigen::Matrix3d new_R, Eigen::Vector3d new_P);
     void removeBack();
     void removeFront(int frame_count);
     void removeOutlier();
+    void inputDepth(const cv::Mat &dsp_img){depth_img = dsp_img;};
     list<FeaturePerId> feature;
     int last_track_num;
+
+    cv::Mat depth_img;
 
   private:
     double compensatedParallax2(const FeaturePerId &it_per_id, int frame_count);

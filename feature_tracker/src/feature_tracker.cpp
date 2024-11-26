@@ -1,5 +1,8 @@
 #include "feature_tracker.h"
 
+#include <opencv2/features2d.hpp>
+
+
 int FeatureTracker::n_id = 0;
 
 bool inBorder(const cv::Point2f &pt)
@@ -31,6 +34,7 @@ void reduceVector(vector<int> &v, vector<uchar> status)
 
 FeatureTracker::FeatureTracker()
 {
+    p_fast_feature_detector = cv::FastFeatureDetector::create();
 }
 
 void FeatureTracker::setMask()
@@ -147,6 +151,10 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
             if (mask.size() != forw_img.size())
                 cout << "wrong size " << endl;
             cv::goodFeaturesToTrack(forw_img, n_pts, MAX_CNT - forw_pts.size(), 0.01, MIN_DIST, mask);
+            // std::vector<cv::KeyPoint> temp_keypts;
+            // p_fast_feature_detector->detect(forw_img, temp_keypts, mask);
+            // for (auto &kp : temp_keypts)
+            //     n_pts.push_back(kp.pt);
         }
         else
             n_pts.clear();

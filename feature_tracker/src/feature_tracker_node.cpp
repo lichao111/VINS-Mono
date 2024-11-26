@@ -59,7 +59,10 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         }
     }
     else
+    {
         PUB_THIS_FRAME = false;
+        ROS_WARN("not pub this frame, stamp = %f", img_msg->header.stamp.toSec());
+    }
 
     cv_bridge::CvImageConstPtr ptr;
     if (img_msg->encoding == "8UC1")
@@ -207,7 +210,7 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "feature_tracker");
     ros::NodeHandle n("~");
-    ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
+    ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Debug);
     readParameters(n);
 
     for (int i = 0; i < NUM_OF_CAM; i++)

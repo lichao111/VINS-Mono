@@ -81,8 +81,30 @@ void Estimator::clearState()
     drift_correct_t = Vector3d::Zero();
 }
 
+void Estimator::initFirstIMUPose(
+    std::vector<pair<Eigen::Vector3d, Eigen::Vector3d>> &imu_vector)
+{
+    if(initFirstPoseFlag)
+        return;
+    printf("init first imu pose\n");
+    initFirstPoseFlag = true;
+    // return;
+    Eigen::Vector3d averAcc(0, 0, 0);
+    int             n = (int)imu_vector.size();
+    for (auto &i : imu_vector)
+    {
+        averAcc = averAcc + i.first;
+    }
+    averAcc = averAcc / n;
+    Matrix3d R0  = Utility::g2R(averAcc);
+    double   yaw = Utility::R2ypr(R0).x();
+    R0           = Utility::ypr2R(Eigen::Vector3d{-yaw, 0, 0}) * R0;
+    Rs[0]        = R0;
+}
+
 void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity)
 {
+    //ROS_DEBUG("processing IMU data with stamp %f, dt, %f, a: %f %f %f, w: %f %f %f", dt, linear_acceleration(0), linear_acceleration(1), linear_acceleration(2), angular_velocity(0), angular_velocity(1), angular_velocity(2));
     if (!first_imu)
     {
         first_imu = true;
@@ -107,21 +129,79 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
         int j = frame_count;         
         Vector3d un_acc_0 = Rs[j] * (acc_0 - Bas[j]) - g;
         Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs[j];
-        Rs[j] *= Utility::deltaQ(un_gyr * dt).toRotationMatrix();
+        if(!imustationary)
+            Rs[j] *= Utility::deltaQ(un_gyr * dt).toRotationMatrix();
         Vector3d un_acc_1 = Rs[j] * (linear_acceleration - Bas[j]) - g;
         Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
-        Ps[j] += dt * Vs[j] + 0.5 * dt * dt * un_acc;
-        Vs[j] += dt * un_acc;
+        ROS_DEBUG("g is [%f %f %f], un_acc = [%f, %f, %f]", g(0), g(1), g(2), un_acc(0), un_acc(1), un_acc(2));
+        if(!imustationary)
+        {
+            static int imu_idx = 0;
+            ROS_DEBUG("dt = %f, imu_idx = %d, position IMU before : %f %f %f", dt, imu_idx, Ps[j].x(), Ps[j].y(), Ps[j].z());
+            Ps[j] += dt * Vs[j] + 0.5 * dt * dt * un_acc;
+            ROS_DEBUG("dt = %f, imu_idx = %d,  osition IMU after : %f %f %f", dt, imu_idx, Ps[j].x(), Ps[j].y(), Ps[j].z());
+            imu_idx ++;
+            Vs[j] += dt * un_acc;
+        }
+
     }
     acc_0 = linear_acceleration;
     gyr_0 = angular_velocity;
 }
 
-void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const std_msgs::Header &header)
+void Estimator::checkimu()
+{
+    Vector3d aver_g;
+    map<double, ImageFrame>::iterator frame_it;
+    Vector3d sum_g;
+    for (frame_it = all_image_frame.begin(), frame_it++; frame_it != all_image_frame.end(); frame_it++)
+    {
+        double dt = frame_it->second.pre_integration->sum_dt;
+        Vector3d tmp_g = frame_it->second.pre_integration->delta_v / dt;
+        sum_g += tmp_g;
+    }
+
+    aver_g = sum_g * 1.0 / ((int)all_image_frame.size() - 1);
+    double var = 0;
+    for (frame_it = all_image_frame.begin(), frame_it++; frame_it != all_image_frame.end(); frame_it++)
+    {
+        double dt = frame_it->second.pre_integration->sum_dt;
+        Vector3d tmp_g = frame_it->second.pre_integration->delta_v / dt;
+        // cout<<"imu delta v g:"<<tmp_g<<endl;
+        // Vector3d tmp_gw = frame_it->second.pre_integration_wheel->delta_v / dt;
+        // cout<<"wheel delta v:"<<tmp_gw<<endl;
+
+        var += (tmp_g - aver_g).transpose() * (tmp_g - aver_g);
+        // cout << "frame g " << tmp_g.transpose() << endl;
+    }
+    var = sqrt(var / ((int)all_image_frame.size() - 1));
+    // ROS_WARN("IMU variation %f!", var);
+    // cout << "cnt num:" << ini_cnt << endl;
+    // cout<<"var check:"<<var<<endl<<endl;
+
+  
+    if (var < 0.1)
+    // if(cnt>20)
+    {
+        // is_imu_excited = true;
+        imustationary = true;
+
+        // ROS_WARN("IMU var stationary detected!");
+        //  return false;
+    }
+    else // 0.25
+    {
+        imustationary = false;
+        // ROS_WARN("IMU excitation OK!");
+        // is_imu_excited=false;
+    }
+}
+
+void Estimator::processImage(map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const std_msgs::Header &header)
 {
     ROS_DEBUG("new image coming ------------------------------------------");
     ROS_DEBUG("Adding feature points %lu", image.size());
-    if (f_manager.addFeatureCheckParallax(frame_count, image, td))
+    if (f_manager.addFeatureCheckParallaxLecar(frame_count, image, td))
         marginalization_flag = MARGIN_OLD;
     else
         marginalization_flag = MARGIN_SECOND_NEW;
@@ -155,34 +235,81 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         }
     }
 
+    checkimu();
     if (solver_flag == INITIAL)
     {
-        if (frame_count == WINDOW_SIZE)
+        if(INIT_BY_LECAR == 0) // init by vins-mono
         {
-            bool result = false;
-            if( ESTIMATE_EXTRINSIC != 2 && (header.stamp.toSec() - initial_timestamp) > 0.1)
+            if (frame_count == WINDOW_SIZE)
             {
-               result = initialStructure();
-               initial_timestamp = header.stamp.toSec();
-            }
-            if(result)
-            {
-                solver_flag = NON_LINEAR;
-                solveOdometry();
-                slideWindow();
-                f_manager.removeFailures();
-                ROS_INFO("Initialization finish!");
-                last_R = Rs[WINDOW_SIZE];
-                last_P = Ps[WINDOW_SIZE];
-                last_R0 = Rs[0];
-                last_P0 = Ps[0];
-                
+                bool result = false;
+                if( ESTIMATE_EXTRINSIC != 2 && (header.stamp.toSec() - initial_timestamp) > 0.1)
+                {
+                result = initialStructure();
+                initial_timestamp = header.stamp.toSec();
+                }
+                if(result)
+                {
+                    solver_flag = NON_LINEAR;
+                    solveOdometry();
+                    slideWindow();
+                    f_manager.removeFailures();
+                    ROS_INFO("Initialization finish!");
+                    last_R = Rs[WINDOW_SIZE];
+                    last_P = Ps[WINDOW_SIZE];
+                    last_R0 = Rs[0];
+                    last_P0 = Ps[0];
+                    
+                }
+                else
+                    slideWindow();
             }
             else
-                slideWindow();
+                frame_count++;
         }
-        else
-            frame_count++;
+        else // init by lecar
+        {
+            //f_manager.triangulateWithDepth(Ps, tic, ric);
+            f_manager.triangulateWithDepth(Ps,tic,ric);
+            if (frame_count == WINDOW_SIZE)
+            {
+                int i = 0;
+                for (auto &frame_it : all_image_frame)
+                {
+                    frame_it.second.R = Rs[i];
+                    frame_it.second.T = Ps[i];
+                    i++;
+                }
+                if (ESTIMATE_EXTRINSIC != 2)
+                {
+                    solveGyroscopeBias(all_image_frame, Bgs);
+                    for (int j = 0; j <= WINDOW_SIZE; j++)
+                    {
+                        pre_integrations[j]->repropagate(Vector3d::Zero(), Bgs[j]);
+                    }
+                    optimization();
+                    //updateLatestStates();
+                    solver_flag = NON_LINEAR;
+                    slideWindow();
+                    ROS_INFO("Initialization finish!");
+                    last_R  = Rs[WINDOW_SIZE];
+                    last_P  = Ps[WINDOW_SIZE];
+                    last_R0 = Rs[0];
+                    last_P0 = Ps[0];
+                }
+            }
+            if (frame_count < WINDOW_SIZE)
+            {
+                frame_count++;
+                int prev_frame   = frame_count - 1;
+                Ps[frame_count]  = Ps[prev_frame];
+                Vs[frame_count]  = Vs[prev_frame];
+                ROS_DEBUG_STREAM("Rs : ["<<prev_frame<<"]" << std::endl << Rs[prev_frame]);
+                Rs[frame_count]  = Rs[prev_frame];
+                Bas[frame_count] = Bas[prev_frame];
+                Bgs[frame_count] = Bgs[prev_frame];
+            }
+        }
     }
     else
     {
@@ -190,7 +317,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         solveOdometry();
         ROS_DEBUG("solver costs: %fms", t_solve.toc());
 
-        if (failureDetection())
+        if (false && failureDetection()) // 建图时不进行失败检测
         {
             ROS_WARN("failure detection!");
             failure_occur = 1;
@@ -559,9 +686,11 @@ void Estimator::double2vector()
 
         Rs[i] = rot_diff * Quaterniond(para_Pose[i][6], para_Pose[i][3], para_Pose[i][4], para_Pose[i][5]).normalized().toRotationMatrix();
         
+        ROS_DEBUG("position befor ceres: %f %f %f\n", Ps[i].x(), Ps[i].y(), Ps[i].z());
         Ps[i] = rot_diff * Vector3d(para_Pose[i][0] - para_Pose[0][0],
                                 para_Pose[i][1] - para_Pose[0][1],
                                 para_Pose[i][2] - para_Pose[0][2]) + origin_P0;
+        ROS_DEBUG("positon after ceres:  %f %f %f\n", Ps[i].x(), Ps[i].y(), Ps[i].z());
 
         Vs[i] = rot_diff * Vector3d(para_SpeedBias[i][0],
                                     para_SpeedBias[i][1],

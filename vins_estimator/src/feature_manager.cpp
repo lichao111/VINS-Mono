@@ -51,7 +51,7 @@ bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vec
     last_track_num = 0;
     for (auto &id_pts : image)
     {
-        FeaturePerFrame f_per_fra(id_pts.second[0].second, td);
+        FeaturePerFrame f_per_fra(id_pts.second[0].second, td, 0);
 
         int feature_id = id_pts.first;
         auto it = find_if(feature.begin(), feature.end(), [feature_id](const FeaturePerId &it)
@@ -95,6 +95,95 @@ bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vec
         return parallax_sum / parallax_num >= MIN_PARALLAX;
     }
 }
+
+bool FeatureManager::addFeatureCheckParallaxLecar(int                                    frame_count,
+                                             map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image,
+                                             double                                 td)
+{
+
+    ROS_DEBUG("input feature: %d\n", (int)image.size());
+    ROS_DEBUG("num of feature: %d\n", getFeatureCount());
+
+    double parallax_sum = 0;
+    int    parallax_num = 0;
+    last_track_num      = 0;
+    auto new_feature_num     = 0;
+    auto long_track_num      = 0;
+
+    for (auto iter = image.begin(), iter_next = image.begin(); iter != image.end();
+         iter = iter_next)
+    {
+        ++iter_next;
+
+        unsigned short pt_depth_mm =
+            depth_img.at<unsigned short>((int)iter->second[0].second(4), (int)iter->second[0].second(3));
+        // 深度计算方式与相机相关
+        double pt_depth_m;
+        constexpr double g_3e_baseline = 42.977;
+        constexpr double g_3e_f = 758.476;
+        //if(USE_MOTEAK==1)
+        {
+            pt_depth_m = (g_3e_baseline * g_3e_f * 32 / pt_depth_mm) / 1000;
+            if(pt_depth_m < DEPTH_MIN_DIST){
+                image.erase(iter);
+                continue;
+            }
+        }
+        
+        if (0 < pt_depth_m && pt_depth_m < DEPTH_MIN_DIST)
+        {
+            image.erase(iter);
+            continue;
+        }
+
+        // std::find_if: http://c.biancheng.net/view/571.html
+        int  feature_id = iter->first;
+        auto it =
+            find_if(feature.begin(), feature.end(),
+                    [feature_id](const FeaturePerId &it) { return it.feature_id == feature_id; });
+
+        if (it == feature.end())
+        {
+            feature.emplace_back(FeaturePerId(feature_id, frame_count));
+            feature.back().feature_per_frame.emplace_back(
+                FeaturePerFrame(iter->second[0].second, td, pt_depth_m));
+            new_feature_num++;
+        }
+        else if (it->feature_id == feature_id)
+        {
+            it->feature_per_frame.emplace_back(FeaturePerFrame(iter->second[0].second, td, pt_depth_m));
+            last_track_num++;
+            if (it->feature_per_frame.size() >= 4)
+            {
+                long_track_num++;
+            }
+        }
+    }
+    if (frame_count < 2 || last_track_num < 20 || long_track_num < 40 || new_feature_num > 0.5 * last_track_num)
+        return true;
+
+    for (auto &it_per_id : feature)
+    {
+        if (it_per_id.start_frame <= frame_count - 2 &&
+            it_per_id.start_frame + int(it_per_id.feature_per_frame.size()) - 1 >= frame_count - 1)
+        {
+            parallax_sum += compensatedParallax2(it_per_id, frame_count);
+            parallax_num++;
+        }
+    }
+
+    if (parallax_num == 0)
+    {
+        return true;
+    }
+    else
+    {
+        ROS_DEBUG("parallax_sum: %lf, parallax_num: %d\n", parallax_sum, parallax_num);
+        ROS_DEBUG("current parallax: %lf\n", parallax_sum / parallax_num * FOCAL_LENGTH);
+        return parallax_sum / parallax_num >= MIN_PARALLAX;
+    }
+}
+
 
 void FeatureManager::debugShow()
 {
@@ -385,4 +474,175 @@ double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int f
     ans = max(ans, sqrt(min(du * du + dv * dv, du_comp * du_comp + dv_comp * dv_comp)));
 
     return ans;
+}
+
+void FeatureManager::triangulateWithDepth(Vector3d _Ps[], Vector3d _tic[], Matrix3d _ric[])
+{
+    ROS_DEBUG("triangulateWithDepth");
+    for (auto &it_per_id : feature)
+    {
+        if (it_per_id.estimated_depth > 0)
+            continue;
+        // if (it_per_id.is_dynamic)
+        // {
+        //     continue;
+        // }
+        it_per_id.used_num = it_per_id.feature_per_frame.size();
+        if (it_per_id.used_num < 4) // here can adjust
+            continue;
+        if (!(it_per_id.used_num >= 2 && it_per_id.start_frame < WINDOW_SIZE - 2))
+            continue;
+
+        int imu_i = it_per_id.start_frame;
+
+        Eigen::Vector3d tr = _Ps[imu_i] + Rs[imu_i] * _tic[0];
+        Eigen::Matrix3d Rr = Rs[imu_i] * _ric[0];
+
+        vector<double> verified_depths;
+        int            no_depth_num = 0;
+
+        vector<double> rough_depths;
+        /**
+         * @brief
+         * 对同一id特征点进行深度交叉验证，并将重投影误差小于阈值的点的，在初始帧上的深度做平均作为估计的深度
+         */
+        for (int k = 0; k < (int)it_per_id.feature_per_frame.size(); k++)
+        {
+            if (it_per_id.feature_per_frame[k].depth == 0)
+            {
+                no_depth_num++;
+                continue;
+            }
+            Eigen::Vector3d t0 = _Ps[imu_i + k] + Rs[imu_i + k] * _tic[0];
+            Eigen::Matrix3d R0 = Rs[imu_i + k] * _ric[0];
+            Eigen::Vector3d point0(it_per_id.feature_per_frame[k].point *
+                                   it_per_id.feature_per_frame[k].depth);
+
+            // transform to reference frame
+            Eigen::Vector3d t2r = Rr.transpose() * (t0 - tr);
+            Eigen::Matrix3d R2r = Rr.transpose() * R0;
+
+            for (int j = 0; j < (int)it_per_id.feature_per_frame.size(); j++)
+            {
+                if (k == j)
+                    continue;
+                Eigen::Vector3d t1  = _Ps[imu_i + j] + Rs[imu_i + j] * _tic[0];
+                Eigen::Matrix3d R1  = Rs[imu_i + j] * _ric[0];
+                Eigen::Vector3d t20 = R0.transpose() * (t1 - t0);
+                Eigen::Matrix3d R20 = R0.transpose() * R1;
+
+                Eigen::Vector3d point1_projected = R20.transpose() * point0 - R20.transpose() * t20;
+                Eigen::Vector2d point1_2d(it_per_id.feature_per_frame[j].point.x(),
+                                          it_per_id.feature_per_frame[j].point.y());
+                Eigen::Vector2d residual =
+                    point1_2d - Vector2d(point1_projected.x() / point1_projected.z(),
+                                         point1_projected.y() / point1_projected.z());
+                if (residual.norm() < 10.0 / 460)
+                {  // this can also be adjust to improve performance
+                    Eigen::Vector3d point_r = R2r * point0 + t2r;
+
+                    if (it_per_id.feature_per_frame[k].depth > DEPTH_MAX_DIST)
+                    {
+                        rough_depths.push_back(point_r.z());
+                    }
+                    else
+                    {
+                        verified_depths.push_back(point_r.z());
+                    }
+                }
+            }
+        }
+
+        if (verified_depths.empty())
+        {
+            if (rough_depths.empty())
+            {
+                if (no_depth_num == it_per_id.feature_per_frame.size())
+                {
+                    int imu_j = imu_i - 1;
+#ifdef USE_ROS
+                    ROS_ASSERT(NUM_OF_CAM == 1);
+#else
+                    assert(NUM_OF_CAM == 1);
+#endif
+
+                    Eigen::MatrixXd svd_A(2 * it_per_id.feature_per_frame.size(), 4);
+                    int             svd_idx = 0;
+
+                    Eigen::Matrix<double, 3, 4> P0;
+                    Eigen::Vector3d             t0 = _Ps[imu_i] + Rs[imu_i] * _tic[0];
+                    Eigen::Matrix3d             R0 = Rs[imu_i] * ric[0];
+                    P0.leftCols<3>()               = Eigen::Matrix3d::Identity();
+                    P0.rightCols<1>()              = Eigen::Vector3d::Zero();
+
+                    for (auto &it_per_frame : it_per_id.feature_per_frame)
+                    {
+                        imu_j++;
+
+                        Eigen::Vector3d             t1 = _Ps[imu_j] + Rs[imu_j] * _tic[0];
+                        Eigen::Matrix3d             R1 = Rs[imu_j] * ric[0];
+                        Eigen::Vector3d             t  = R0.transpose() * (t1 - t0);
+                        Eigen::Matrix3d             R  = R0.transpose() * R1;
+                        Eigen::Matrix<double, 3, 4> P;
+                        P.leftCols<3>()      = R.transpose();
+                        P.rightCols<1>()     = -R.transpose() * t;
+                        Eigen::Vector3d f    = it_per_frame.point.normalized();
+                        svd_A.row(svd_idx++) = f[0] * P.row(2) - f[2] * P.row(0);
+                        svd_A.row(svd_idx++) = f[1] * P.row(2) - f[2] * P.row(1);
+
+                        if (imu_i == imu_j)
+                            continue;
+                    }
+#ifdef USE_ROS
+                    ROS_ASSERT(svd_idx == svd_A.rows());
+#else
+                    assert(svd_idx == svd_A.rows());
+#endif
+
+                    Eigen::Vector4d svd_V =
+                        Eigen::JacobiSVD<Eigen::MatrixXd>(svd_A, Eigen::ComputeThinV)
+                            .matrixV()
+                            .rightCols<1>();
+                    double svd_method = svd_V[2] / svd_V[3];
+
+                    if (svd_method < DEPTH_MIN_DIST)
+                    {
+                        it_per_id.estimated_depth = DEPTH_MAX_DIST;
+                        it_per_id.estimate_flag   = 2;
+                    }
+                    else
+                    {
+                        it_per_id.estimated_depth = svd_method;
+                        it_per_id.estimate_flag   = 2;
+                    }
+                }
+                else
+                {
+                    continue;
+                }
+            }
+            else
+            {
+                double depth_sum =
+                    std::accumulate(std::begin(rough_depths), std::end(rough_depths), 0.0);
+                double depth_ave          = depth_sum / rough_depths.size();
+                it_per_id.estimated_depth = depth_ave;
+                it_per_id.estimate_flag   = 0;
+            }
+        }
+        else
+        {
+            double depth_sum =
+                std::accumulate(std::begin(verified_depths), std::end(verified_depths), 0.0);
+            double depth_ave          = depth_sum / verified_depths.size();
+            it_per_id.estimated_depth = depth_ave;
+            it_per_id.estimate_flag   = 1;
+        }
+
+        if (it_per_id.estimated_depth < 0.1)
+        {
+            it_per_id.estimated_depth = INIT_DEPTH;
+            it_per_id.estimate_flag   = 0;
+        }
+    }
 }

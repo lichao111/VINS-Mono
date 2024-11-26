@@ -37,6 +37,10 @@ extern double TR;
 extern int ESTIMATE_TD;
 extern int ROLLING_SHUTTER;
 extern double ROW, COL;
+extern int INIT_BY_LECAR;
+extern double DEPTH_MIN_DIST;
+extern double DEPTH_MAX_DIST;
+extern std::string DEPTH_TOPIC;
 
 
 void readParameters(ros::NodeHandle &n);

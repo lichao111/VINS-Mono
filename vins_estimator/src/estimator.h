@@ -29,11 +29,12 @@ class Estimator
     Estimator();
 
     void setParameter();
-
+    void initFirstIMUPose(std::vector<pair<Eigen::Vector3d, Eigen::Vector3d>> &imu_vector);
     // interface
     void processIMU(double t, const Vector3d &linear_acceleration, const Vector3d &angular_velocity);
-    void processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const std_msgs::Header &header);
+    void processImage(map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const std_msgs::Header &header);
     void setReloFrame(double _frame_stamp, int _frame_index, vector<Vector3d> &_match_points, Vector3d _relo_t, Matrix3d _relo_r);
+    void checkimu();
 
     // internal
     void clearState();
@@ -64,7 +65,7 @@ class Estimator
 
     SolverFlag solver_flag;
     MarginalizationFlag  marginalization_flag;
-    Vector3d g;
+    Vector3d g{0.0,0.0,9.805};
     MatrixXd Ap[2], backup_A;
     VectorXd bp[2], backup_b;
 
@@ -136,4 +137,7 @@ class Estimator
     Vector3d relo_relative_t;
     Quaterniond relo_relative_q;
     double relo_relative_yaw;
+    bool initFirstPoseFlag = false;
+    bool imustationary = false;
+
 };

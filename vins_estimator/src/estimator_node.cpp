@@ -3,6 +3,7 @@
 #include <map>
 #include <thread>
 #include <mutex>
+#include <tuple>
 #include <condition_variable>
 #include <ros/ros.h>
 #include <cv_bridge/cv_bridge.h>
@@ -18,6 +19,7 @@ Estimator estimator;
 std::condition_variable con;
 double current_time = -1;
 queue<sensor_msgs::ImuConstPtr> imu_buf;
+queue<sensor_msgs::ImageConstPtr> depth_buf;
 queue<sensor_msgs::PointCloudConstPtr> feature_buf;
 queue<sensor_msgs::PointCloudConstPtr> relo_buf;
 int sum_of_wait = 0;
@@ -95,6 +97,8 @@ void update()
 
 }
 
+
+
 std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>>
 getMeasurements()
 {
@@ -135,6 +139,59 @@ getMeasurements()
     return measurements;
 }
 
+using image_pack = std::tuple<sensor_msgs::PointCloudConstPtr,sensor_msgs::ImageConstPtr>;
+std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, image_pack>>
+getMeasurementsWithDepth()
+{
+    std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, image_pack>> measurements;
+
+    while (true)
+    {
+        if (imu_buf.empty() || feature_buf.empty() || depth_buf.empty())
+            return measurements;
+
+        if (!(imu_buf.back()->header.stamp.toSec() > feature_buf.front()->header.stamp.toSec() + estimator.td))
+        {
+            //ROS_WARN("wait for imu, only should happen at the beginning");
+            sum_of_wait++;
+            return measurements;
+        }
+
+        if (!(imu_buf.front()->header.stamp.toSec() < feature_buf.front()->header.stamp.toSec() + estimator.td))
+        {
+            ROS_WARN("throw img, only should happen at the beginning");
+            feature_buf.pop();
+            continue;
+        }
+
+        if ( (depth_buf.front()->header.stamp.toSec() != feature_buf.front()->header.stamp.toSec()))
+        {
+            ROS_WARN("throw depth!!!, depth stamp: %f, img stamp: %f", depth_buf.front()->header.stamp.toSec(), feature_buf.front()->header.stamp.toSec());
+            depth_buf.pop();
+            continue;
+        }
+
+        sensor_msgs::PointCloudConstPtr img_msg = feature_buf.front();
+        feature_buf.pop();
+
+        auto depth_msg = depth_buf.front();
+        depth_buf.pop();
+        ROS_WARN("get image and depth with stamp %f", img_msg->header.stamp.toSec());
+
+        std::vector<sensor_msgs::ImuConstPtr> IMUs;
+        while (imu_buf.front()->header.stamp.toSec() < img_msg->header.stamp.toSec() + estimator.td)
+        {
+            IMUs.emplace_back(imu_buf.front());
+            imu_buf.pop();
+        }
+        IMUs.emplace_back(imu_buf.front());
+        if (IMUs.empty())
+            ROS_WARN("no imu between two image");
+        measurements.emplace_back(IMUs, std::make_tuple(img_msg, depth_msg));
+    }
+    return measurements;
+}
+
 void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
 {
     if (imu_msg->header.stamp.toSec() <= last_imu_t)
@@ -159,6 +216,14 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
         if (estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR)
             pubLatestOdometry(tmp_P, tmp_Q, tmp_V, header);
     }
+}
+
+void depth_callback(const sensor_msgs::ImageConstPtr &depth_msg)
+{
+    m_buf.lock();
+    depth_buf.push(depth_msg);
+    m_buf.unlock();
+    con.notify_one();
 }
 
 
@@ -210,18 +275,48 @@ void process()
 {
     while (true)
     {
-        std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> measurements;
+        //std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> measurements;
+        std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, image_pack>> measurements;
         std::unique_lock<std::mutex> lk(m_buf);
         con.wait(lk, [&]
                  {
-            return (measurements = getMeasurements()).size() != 0;
+            //return (measurements = getMeasurements()).size() != 0;
+            return (measurements = getMeasurementsWithDepth()).size() != 0;
                  });
         lk.unlock();
         m_estimator.lock();
+
         for (auto &measurement : measurements)
         {
-            auto img_msg = measurement.second;
+            auto img_msg = std::get<0>(measurement.second);
+            auto depth_msg = std::get<1>(measurement.second);
+
+            sensor_msgs::Image img;
+            img.header = depth_msg->header;
+            img.height = depth_msg->height;
+            img.width = depth_msg->width;
+            img.is_bigendian = depth_msg->is_bigendian;
+            img.step = depth_msg->step;
+            img.data = depth_msg->data;
+            img.encoding = "mono8";
+            auto depth_image = cv_bridge::toCvCopy(img, sensor_msgs::image_encodings::MONO8)->image;
+            estimator.f_manager.inputDepth(depth_image);
+
             double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
+
+            std::vector<pair<Eigen::Vector3d, Eigen::Vector3d>> imu_vector;
+            for(auto &imu_msg: measurement.first)
+            {
+                dx = imu_msg->linear_acceleration.x;
+                dy = imu_msg->linear_acceleration.y;
+                dz = imu_msg->linear_acceleration.z;
+                rx = imu_msg->angular_velocity.x;
+                ry = imu_msg->angular_velocity.y;
+                rz = imu_msg->angular_velocity.z;
+                imu_vector.emplace_back(std::make_pair(Eigen::Vector3d(dx, dy, dz), Eigen::Vector3d(rx, ry, rz)));
+            }
+            estimator.initFirstIMUPose(imu_vector);
+
             for (auto &imu_msg : measurement.first)
             {
                 double t = imu_msg->header.stamp.toSec();
@@ -240,8 +335,7 @@ void process()
                     ry = imu_msg->angular_velocity.y;
                     rz = imu_msg->angular_velocity.z;
                     estimator.processIMU(dt, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz));
-                    //printf("imu: dt:%f a: %f %f %f w: %f %f %f\n",dt, dx, dy, dz, rx, ry, rz);
-
+                    ROS_DEBUG("processing IMU data with stamp %f, dt, %f, a: %f %f %f, w: %f %f %f", imu_msg->header.stamp.toSec(), dt, dx, dy, dz, rx, ry, rz);
                 }
                 else
                 {
@@ -260,7 +354,7 @@ void process()
                     ry = w1 * ry + w2 * imu_msg->angular_velocity.y;
                     rz = w1 * rz + w2 * imu_msg->angular_velocity.z;
                     estimator.processIMU(dt_1, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz));
-                    //printf("dimu: dt:%f a: %f %f %f w: %f %f %f\n",dt_1, dx, dy, dz, rx, ry, rz);
+                    ROS_DEBUG("processing IMU data with stamp %f, dt, %f, a: %f %f %f, w: %f %f %f", imu_msg->header.stamp.toSec(), dt_1, dx, dy, dz, rx, ry, rz);
                 }
             }
             // set relocalization frame
@@ -342,7 +436,7 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "vins_estimator");
     ros::NodeHandle n("~");
-    ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
+    ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Debug);
     readParameters(n);
     estimator.setParameter();
 #ifdef EIGEN_DONT_PARALLELIZE
@@ -353,6 +447,7 @@ int main(int argc, char **argv)
     registerPub(n);
 
     ros::Subscriber sub_imu = n.subscribe(IMU_TOPIC, 2000, imu_callback, ros::TransportHints().tcpNoDelay());
+    ros::Subscriber sub_depth = n.subscribe(DEPTH_TOPIC, 2000, depth_callback, ros::TransportHints().tcpNoDelay());
     ros::Subscriber sub_image = n.subscribe("/feature_tracker/feature", 2000, feature_callback);
     ros::Subscriber sub_restart = n.subscribe("/feature_tracker/restart", 2000, restart_callback);
     ros::Subscriber sub_relo_points = n.subscribe("/pose_graph/match_points", 2000, relocalization_callback);

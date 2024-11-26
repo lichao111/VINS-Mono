@@ -22,6 +22,10 @@ std::string VINS_RESULT_PATH;
 std::string IMU_TOPIC;
 double ROW, COL;
 double TD, TR;
+int INIT_BY_LECAR;
+double DEPTH_MIN_DIST;
+double DEPTH_MAX_DIST;
+std::string DEPTH_TOPIC;
 
 template <typename T>
 T readParam(ros::NodeHandle &n, std::string name)
@@ -50,6 +54,7 @@ void readParameters(ros::NodeHandle &n)
     }
 
     fsSettings["imu_topic"] >> IMU_TOPIC;
+    fsSettings["depth_topic"] >> DEPTH_TOPIC;
 
     SOLVER_TIME = fsSettings["max_solver_time"];
     NUM_ITERATIONS = fsSettings["max_num_iterations"];
@@ -132,6 +137,20 @@ void readParameters(ros::NodeHandle &n)
     {
         TR = 0;
     }
+
+    INIT_BY_LECAR = fsSettings["intit_by_lecar"];
+    if(INIT_BY_LECAR == 1)
+    {
+        ROS_INFO("Init by lecar");
+    }
+    else
+    {
+        ROS_INFO("Init by vins-mono");
+    }
+
+    DEPTH_MIN_DIST = fsSettings["depth_min_dist"];
+    DEPTH_MAX_DIST = fsSettings["depth_max_dist"];
+
     
     fsSettings.release();
 }
