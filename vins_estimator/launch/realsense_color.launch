@@ -20,4 +20,5 @@
         <param name="skip_dis" type="double" value="0" />
     </node>
 
+    <node name="rvizvisulaization" pkg="rviz" type="rviz" args="-d $(find feature_tracker)/../config/vins_rviz_config.rviz" /> 
 </launch>
