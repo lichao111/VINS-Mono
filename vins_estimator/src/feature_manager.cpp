@@ -119,6 +119,8 @@ void FeatureManager::debugShow()
 
 vector<pair<Vector3d, Vector3d>> FeatureManager::getCorresponding(int frame_count_l, int frame_count_r)
 {
+    //ceres存放的是两个不同帧之间的对应关系
+    //具体来说，它存储的是frame_count_l和frame_count_r两个帧中检测到的同一个特征点的三维坐标
     vector<pair<Vector3d, Vector3d>> corres;
     for (auto &it : feature)
     {
@@ -352,6 +354,7 @@ void FeatureManager::removeFront(int frame_count)
     }
 }
 
+//计算视差 函数的主要功能是计算特征点在倒数第二帧和倒数第三帧之间的视差 并返回视差的最大值。视差的计算包括未补偿视差和补偿视差。
 double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int frame_count)
 {
     //check the second last frame is keyframe or not

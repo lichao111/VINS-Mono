@@ -51,6 +51,10 @@ class IntegrationBase
             propagate(dt_buf[i], acc_buf[i], gyr_buf[i]);
     }
 
+    /**
+     * @brief 中值积分
+     * 论文中以欧拉积分为例，但是实际上使用的是中值积分
+     */
     void midPointIntegration(double _dt, 
                             const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
                             const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
@@ -59,6 +63,13 @@ class IntegrationBase
                             Eigen::Vector3d &result_delta_p, Eigen::Quaterniond &result_delta_q, Eigen::Vector3d &result_delta_v,
                             Eigen::Vector3d &result_linearized_ba, Eigen::Vector3d &result_linearized_bg, bool update_jacobian)
     {
+        /***
+         * 此处的积分方法为中值积分，公式参照https://blog.csdn.net/qq_41839222/article/details/86290941
+         * 此处计算result_delta_q时，小角度的四元数近似，也就是用实部为1的四元数来近似小角度转动
+         * 四元数【w, x, y, z】，w为实部，x, y, z为虚部
+         * 四元数和旋转向量的转换关系为：q = [cos(theta/2), sin(theta/2) * x, sin(theta/2) * y, sin(theta/2) * z]
+         * 如果theta是一个小角度，那么sin(theta/2) ≈ theta/2，cos(theta/2) ≈ 1
+         */
         //ROS_INFO("midpoint integration");
         Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);
         Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
@@ -77,6 +88,7 @@ class IntegrationBase
             Vector3d a_1_x = _acc_1 - linearized_ba;
             Matrix3d R_w_x, R_a_0_x, R_a_1_x;
 
+            // 此处构造的F和V是增量误差递推方程的离散形式， 对应blog中的F矩阵和V矩阵都能对应成功
             R_w_x<<0, -w_x(2), w_x(1),
                 w_x(2), 0, -w_x(0),
                 -w_x(1), w_x(0), 0;

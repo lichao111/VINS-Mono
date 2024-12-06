@@ -127,6 +127,7 @@ getMeasurements()
             IMUs.emplace_back(imu_buf.front());
             imu_buf.pop();
         }
+        // 这一帧imu是为了取到一个大于img时间的imu，用于插值，但是不从imu_buf中删除， 保留到下一次
         IMUs.emplace_back(imu_buf.front());
         if (IMUs.empty())
             ROS_WARN("no imu between two image");
@@ -245,6 +246,12 @@ void process()
                 }
                 else
                 {
+                    /**
+                     * imag时间[T0, T1]
+                     * imu时间为[t0, t1, t2, t3, t4]
+                     * t3< T1 <t4 
+                     * 也就是准确对应T1的imu数值需要用插值的方法计算出来
+                     */
                     double dt_1 = img_t - current_time;
                     double dt_2 = t - img_t;
                     current_time = img_t;
@@ -342,7 +349,7 @@ int main(int argc, char **argv)
 {
     ros::init(argc, argv, "vins_estimator");
     ros::NodeHandle n("~");
-    ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
+    ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Debug);
     readParameters(n);
     estimator.setParameter();
 #ifdef EIGEN_DONT_PARALLELIZE

@@ -1,5 +1,8 @@
 #include "initial_alignment.h"
 
+/**
+ * 对应papar中的B. Visual-Inertial Alignment 1) Groscope Bias Calibration
+ */
 void solveGyroscopeBias(map<double, ImageFrame> &all_image_frame, Vector3d* Bgs)
 {
     Matrix3d A;

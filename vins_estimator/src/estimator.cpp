@@ -268,6 +268,7 @@ bool Estimator::initialStructure()
     Matrix3d relative_R;
     Vector3d relative_T;
     int l;
+    // 这步要想成功的关键是要有足够的特征点匹配，以及足够的视差
     if (!relativePose(relative_R, relative_T, l))
     {
         ROS_INFO("Not enough features or parallax; Move device around");
@@ -439,12 +440,17 @@ bool Estimator::visualInitialAlign()
     return true;
 }
 
+/**
+ * 此处对应papar中的A. Sliding Window Vision-Only SfM
+ */
 bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
 {
     // find previous frame which contians enough correspondance and parallex with newest frame
     for (int i = 0; i < WINDOW_SIZE; i++)
     {
         vector<pair<Vector3d, Vector3d>> corres;
+        // 每一帧i都和最新的的帧WINDOW_SIZE进行匹配
+        // 需要满足第i帧和最新帧匹配成功的特征点大于20个
         corres = f_manager.getCorresponding(i, WINDOW_SIZE);
         if (corres.size() > 20)
         {
@@ -452,13 +458,15 @@ bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
             double average_parallax;
             for (int j = 0; j < int(corres.size()); j++)
             {
-                Vector2d pts_0(corres[j].first(0), corres[j].first(1));
-                Vector2d pts_1(corres[j].second(0), corres[j].second(1));
-                double parallax = (pts_0 - pts_1).norm();
+                Vector2d pts_0(corres[j].first(0), corres[j].first(1)); // left(u, v)
+                Vector2d pts_1(corres[j].second(0), corres[j].second(1));// right (u, v)
+                double parallax = (pts_0 - pts_1).norm(); // 视差
                 sum_parallax = sum_parallax + parallax;
 
             }
             average_parallax = 1.0 * sum_parallax / int(corres.size());
+            // FOCAL_LENGTH = 460 
+            // 使用找到的配置帧，恢复出了相对位姿
             if(average_parallax * 460 > 30 && m_estimator.solveRelativeRT(corres, relative_R, relative_T))
             {
                 l = i;
@@ -677,12 +685,13 @@ void Estimator::optimization()
     {
         ceres::LocalParameterization *local_parameterization = new PoseLocalParameterization();
         problem.AddParameterBlock(para_Pose[i], SIZE_POSE, local_parameterization);
-        problem.AddParameterBlock(para_SpeedBias[i], SIZE_SPEEDBIAS);
+        problem.AddParameterBlock(para_SpeedBias[i], SIZE_SPEEDBIAS); // para_speedbias = [v, ba, bg]
     }
     for (int i = 0; i < NUM_OF_CAM; i++)
     {
         ceres::LocalParameterization *local_parameterization = new PoseLocalParameterization();
         problem.AddParameterBlock(para_Ex_Pose[i], SIZE_POSE, local_parameterization);
+        //是否估计外参矩阵
         if (!ESTIMATE_EXTRINSIC)
         {
             ROS_DEBUG("fix extinsic param");
@@ -691,6 +700,7 @@ void Estimator::optimization()
         else
             ROS_DEBUG("estimate extinsic param");
     }
+    //是否估计时间偏移
     if (ESTIMATE_TD)
     {
         problem.AddParameterBlock(para_Td[0], 1);
@@ -766,6 +776,7 @@ void Estimator::optimization()
     ROS_DEBUG("visual measurement count: %d", f_m_cnt);
     ROS_DEBUG("prepare for ceres: %f", t_prepare.toc());
 
+    //检测到了回环
     if(relocalization_info)
     {
         //printf("set relocalization factor! \n");

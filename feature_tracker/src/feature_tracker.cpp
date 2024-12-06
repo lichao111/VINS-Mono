@@ -132,6 +132,7 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
         rejectWithF();
         ROS_DEBUG("set mask begins");
         TicToc t_m;
+        // 通过设置一个mask，来控制特征点的距离，避免特征点聚集在一起
         setMask();
         ROS_DEBUG("set mask costs %fms", t_m.toc());
 
@@ -146,6 +147,7 @@ void FeatureTracker::readImage(const cv::Mat &_img, double _cur_time)
                 cout << "mask type wrong " << endl;
             if (mask.size() != forw_img.size())
                 cout << "wrong size " << endl;
+            //使用SHI-TOMASI角点检测器检测新的特征点(此种方法是对Harris角点检测器的改进 角点质量较高)
             cv::goodFeaturesToTrack(forw_img, n_pts, MAX_CNT - forw_pts.size(), 0.01, MIN_DIST, mask);
         }
         else
@@ -188,6 +190,7 @@ void FeatureTracker::rejectWithF()
         }
 
         vector<uchar> status;
+        // 使用RANSAC方法计算基础矩阵， 用于去除误匹配的点， 提高焦点追踪的准确性
         cv::findFundamentalMat(un_cur_pts, un_forw_pts, cv::FM_RANSAC, F_THRESHOLD, 0.99, status);
         int size_a = cur_pts.size();
         reduceVector(prev_pts, status);

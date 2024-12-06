@@ -122,6 +122,7 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	//cout << "set 0 and " << l << " as known " << endl;
 	// have relative_r relative_t
 	// intial two view
+	// 这里的l不一定是0， 0 <= l <= frame_num - 1
 	q[l].w() = 1;
 	q[l].x() = 0;
 	q[l].y() = 0;
@@ -235,6 +236,7 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	//cout << " begin full BA " << endl;
 	for (int i = 0; i < frame_num; i++)
 	{
+		//eigen类型转换到double array, 用于ceres
 		//double array for ceres
 		c_translation[i][0] = c_Translation[i].x();
 		c_translation[i][1] = c_Translation[i].y();
@@ -245,16 +247,19 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 		c_rotation[i][3] = c_Quat[i].z();
 		problem.AddParameterBlock(c_rotation[i], 4, local_parameterization);
 		problem.AddParameterBlock(c_translation[i], 3);
+		// 固定第l帧的旋转参数
 		if (i == l)
 		{
 			problem.SetParameterBlockConstant(c_rotation[i]);
 		}
+		// 固定第frame_num - 1帧和l帧的平移参数
 		if (i == l || i == frame_num - 1)
 		{
 			problem.SetParameterBlockConstant(c_translation[i]);
 		}
 	}
 
+	//添加重投影误差项
 	for (int i = 0; i < feature_num; i++)
 	{
 		if (sfm_f[i].state != true)

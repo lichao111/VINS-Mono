@@ -189,7 +189,9 @@ namespace cv {
     }
 }
 
-
+/**
+ * 通过给定的特征点 估计两个相机位姿之间的相对旋转和平移向量
+ */
 bool MotionEstimator::solveRelativeRT(const vector<pair<Vector3d, Vector3d>> &corres, Matrix3d &Rotation, Vector3d &Translation)
 {
     if (corres.size() >= 15)
@@ -201,6 +203,7 @@ bool MotionEstimator::solveRelativeRT(const vector<pair<Vector3d, Vector3d>> &co
             rr.push_back(cv::Point2f(corres[i].second(0), corres[i].second(1)));
         }
         cv::Mat mask;
+        // 计算基本矩阵的方法有 cv::FM_RANSAC 和 cv::FM_8POINT 等
         cv::Mat E = cv::findFundamentalMat(ll, rr, cv::FM_RANSAC, 0.3 / 460, 0.99, mask);
         cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3) << 1, 0, 0, 0, 1, 0, 0, 0, 1);
         cv::Mat rot, trans;
@@ -218,6 +221,7 @@ bool MotionEstimator::solveRelativeRT(const vector<pair<Vector3d, Vector3d>> &co
 
         Rotation = R.transpose();
         Translation = -R.transpose() * T;
+        // 如果内点数量大于12个则认为计算可靠 否则不可靠
         if(inlier_cnt > 12)
             return true;
         else
