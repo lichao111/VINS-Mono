@@ -210,6 +210,7 @@ struct FourDOFWeightError
 	template <typename T>
 	bool operator()(const T* const yaw_i, const T* ti, const T* yaw_j, const T* tj, T* residuals) const
 	{
+		//计算两帧之间的相对平移向量
 		T t_w_ij[3];
 		t_w_ij[0] = tj[0] - ti[0];
 		t_w_ij[1] = tj[1] - ti[1];
@@ -225,6 +226,7 @@ struct FourDOFWeightError
 		T t_i_ij[3];
 		RotationMatrixRotatePoint(i_R_w, t_w_ij, t_i_ij);
 
+		// t_x t_y t_z 为预期值
 		residuals[0] = (t_i_ij[0] - T(t_x)) * T(weight);
 		residuals[1] = (t_i_ij[1] - T(t_y)) * T(weight);
 		residuals[2] = (t_i_ij[2] - T(t_z)) * T(weight);

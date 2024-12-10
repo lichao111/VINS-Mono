@@ -34,8 +34,8 @@ KeyFrame::KeyFrame(double _time_stamp, int _index, Vector3d &_vio_T_w_i, Matrix3
 	has_fast_point = false;
 	loop_info << 0, 0, 0, 0, 0, 0, 0, 0;
 	sequence = _sequence;
-	computeWindowBRIEFPoint();
-	computeBRIEFPoint();
+	computeWindowBRIEFPoint(); //计算从后端优化来的特征点的描述字
+	computeBRIEFPoint();	//重新计算fast焦点 并计算描述子
 	if(!DEBUG_IMAGE)
 		image.release();
 }
@@ -81,6 +81,7 @@ void KeyFrame::computeWindowBRIEFPoint()
 	    key.pt = point_2d_uv[i];
 	    window_keypoints.push_back(key);
 	}
+	// 计算描述子
 	extractor(image, window_keypoints, window_brief_descriptors);
 }
 
@@ -149,6 +150,9 @@ bool KeyFrame::searchInAera(const BRIEF::bitset window_descriptor,
       return false;
 }
 
+/**
+ * 在当前关键帧与旧关键帧之间进行描述子匹配, 当前帧的window中的关键点（较少 Harris角点）和闭环中老帧关键点（较多 类型为fast）进行匹配
+ */
 void KeyFrame::searchByBRIEFDes(std::vector<cv::Point2f> &matched_2d_old,
 								std::vector<cv::Point2f> &matched_2d_old_norm,
                                 std::vector<uchar> &status,
@@ -482,10 +486,11 @@ bool KeyFrame::findConnection(KeyFrame* old_kf)
 
 	    	has_loop = true;
 	    	loop_index = old_kf->index;
+			// 通过pnp更新当前帧的位姿
 	    	loop_info << relative_t.x(), relative_t.y(), relative_t.z(),
 	    	             relative_q.w(), relative_q.x(), relative_q.y(), relative_q.z(),
 	    	             relative_yaw;
-	    	if(FAST_RELOCALIZATION)
+	    	if(FAST_RELOCALIZATION) //发送给后端优化进行快速重定位
 	    	{
 			    sensor_msgs::PointCloud msg_match_points;
 			    msg_match_points.header.stamp = ros::Time(time_stamp);

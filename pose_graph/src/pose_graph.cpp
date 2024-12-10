@@ -205,6 +205,7 @@ void PoseGraph::addKeyFrame(KeyFrame* cur_kf, bool flag_detect_loop)
     //posegraph_visualization->add_pose(P + Vector3d(VISUALIZATION_SHIFT_X, VISUALIZATION_SHIFT_Y, 0), Q);
 
 	keyframelist.push_back(cur_kf);
+    printf("add keyframe %d \n", cur_kf->index);
     publish();
 	m_keyframelist.unlock();
 }
@@ -301,6 +302,9 @@ KeyFrame* PoseGraph::getKeyFrame(int index)
         return NULL;
 }
 
+/**
+ * 查找回环帧， 返回回环帧的index， 查找条件为当前帧往前50帧，返回的是最早的回环帧
+ */
 int PoseGraph::detectLoop(KeyFrame* keyframe, int frame_index)
 {
     // put image into image_pool; for visualization
@@ -400,6 +404,9 @@ void PoseGraph::addKeyFrameIntoVoc(KeyFrame* keyframe)
     db.add(keyframe->brief_descriptors);
 }
 
+/**
+ * 序列边为了保持各帧之间的相对位姿 回环边为了保持回环帧与回环帧之间的相对位姿
+ */
 void PoseGraph::optimize4DoF()
 {
     while(true)
@@ -407,19 +414,37 @@ void PoseGraph::optimize4DoF()
         int cur_index = -1;
         int first_looped_index = -1;
         m_optimize_buf.lock();
-        while(!optimize_buf.empty())
+        while(!optimize_buf.empty()) //只取最新的帧
         {
+            printf("native pose graph\n");
             cur_index = optimize_buf.front();
             first_looped_index = earliest_loop_index;
-            optimize_buf.pop();
+            optimize_buf.pop(); //除了最新帧外其余全部扔掉
         }
         m_optimize_buf.unlock();
         if (cur_index != -1)
         {
             printf("optimize pose graph \n");
+            auto getMinMaxIdx = [&]() {
+                int min_idx = cur_index;
+                int max_idx = cur_index;
+                list<KeyFrame*>::iterator it = keyframelist.begin();
+                for (; it != keyframelist.end(); it++)
+                {
+                    if ((*it)->index < first_looped_index)
+                        continue;
+                    if ((*it)->index < min_idx)
+                        min_idx = (*it)->index;
+                    if ((*it)->index > max_idx)
+                        max_idx = (*it)->index;
+                }
+                return std::make_pair(min_idx, max_idx);
+            };
+            auto indx_pair = getMinMaxIdx();
+            printf("cur_index: %d, min_idx: %d, max_idx: %d\n", cur_index, indx_pair.first, indx_pair.second);
             TicToc tmp_t;
             m_keyframelist.lock();
-            KeyFrame* cur_kf = getKeyFrame(cur_index);
+            KeyFrame* cur_kf = getKeyFrame(cur_index); //获取当前帧
 
             int max_length = cur_index + 1;
 
@@ -432,59 +457,61 @@ void PoseGraph::optimize4DoF()
             ceres::Problem problem;
             ceres::Solver::Options options;
             options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
-            //options.minimizer_progress_to_stdout = true;
-            //options.max_solver_time_in_seconds = SOLVER_TIME * 3;
-            options.max_num_iterations = 5;
+            //options.minimizer_progress_to_stdout = true; // 设置是否在标准输出中打印优化过程的进度信息。
+            //options.max_solver_time_in_seconds = SOLVER_TIME * 3; //最大优化时间
+            options.max_num_iterations = 5; //最大迭代次数为5
             ceres::Solver::Summary summary;
             ceres::LossFunction *loss_function;
-            loss_function = new ceres::HuberLoss(0.1);
-            //loss_function = new ceres::CauchyLoss(1.0);
+            loss_function = new ceres::HuberLoss(0.1); //这是一种损失函数，用于处理异常值或噪声较大的数据。它在残差较小的情况下接近平方误差，而在残差较大时逐渐变为绝对误差
+            //loss_function = new ceres::CauchyLoss(1.0); //这是一种Cauchy损失函数，其响应随着残差增大而迅速增加
             ceres::LocalParameterization* angle_local_parameterization =
-                AngleLocalParameterization::Create();
+                AngleLocalParameterization::Create(); 
+            //AngleLocalParameterization 类通过将角度参数映射到一个更稳定的参数空间来工作。具体来说，它将角度参数从 [0, 2π) 映射到 [-π, π)，这样可以避免在优化过程中出现周期性的跳跃问题。这种映射有助于提高优化过程的稳定性和收敛速度。
 
             list<KeyFrame*>::iterator it;
 
             int i = 0;
             for (it = keyframelist.begin(); it != keyframelist.end(); it++)
             {
-                if ((*it)->index < first_looped_index)
+                if ((*it)->index < first_looped_index) // ??为什么有这个限制
                     continue;
                 (*it)->local_index = i;
-                Quaterniond tmp_q;
-                Matrix3d tmp_r;
-                Vector3d tmp_t;
-                (*it)->getVioPose(tmp_t, tmp_r);
+                Quaterniond tmp_q; // 四元数
+                Matrix3d tmp_r;    //相对于world旋转矩阵
+                Vector3d tmp_t;    //相对于world的位置
+                (*it)->getVioPose(tmp_t, tmp_r); //获取keyframe的vio pose
                 tmp_q = tmp_r;
-                t_array[i][0] = tmp_t(0);
-                t_array[i][1] = tmp_t(1);
-                t_array[i][2] = tmp_t(2);
+                t_array[i][0] = tmp_t(0); //x
+                t_array[i][1] = tmp_t(1); //y
+                t_array[i][2] = tmp_t(2); //z
                 q_array[i] = tmp_q;
 
-                Vector3d euler_angle = Utility::R2ypr(tmp_q.toRotationMatrix());
+                Vector3d euler_angle = Utility::R2ypr(tmp_q.toRotationMatrix()); //将四元数转换为欧拉角[yaw, pitch, roll]
                 euler_array[i][0] = euler_angle.x();
                 euler_array[i][1] = euler_angle.y();
                 euler_array[i][2] = euler_angle.z();
 
                 sequence_array[i] = (*it)->sequence;
 
-                problem.AddParameterBlock(euler_array[i], 1, angle_local_parameterization);
-                problem.AddParameterBlock(t_array[i], 3);
+                // 要优化的四个自由度 yaw, x, y, z
+                problem.AddParameterBlock(euler_array[i], 1, angle_local_parameterization); //只对yaw进行优化
+                problem.AddParameterBlock(t_array[i], 3); // x, y, z  均是优化变量
 
                 if ((*it)->index == first_looped_index || (*it)->sequence == 0)
                 {
-                    problem.SetParameterBlockConstant(euler_array[i]);
-                    problem.SetParameterBlockConstant(t_array[i]);
+                    problem.SetParameterBlockConstant(euler_array[i]); // 设置为常量 不会进行优化
+                    problem.SetParameterBlockConstant(t_array[i]);     // 设置为常量 不会进行优化
                 }
-
+                //如果关闭了序列边，那么全局优化将不会再考虑关键帧之间的相对位姿，完全只考虑回环的残差，就会出现回环帧突变，不具有平滑性
                 //add edge
-                for (int j = 1; j < 5; j++)
+                for (int j = 1; j < 5; j++) // 遍历当前关键帧的前 4 个相邻关键帧
                 {
                   if (i - j >= 0 && sequence_array[i] == sequence_array[i-j])
                   {
-                    Vector3d euler_conncected = Utility::R2ypr(q_array[i-j].toRotationMatrix());
-                    Vector3d relative_t(t_array[i][0] - t_array[i-j][0], t_array[i][1] - t_array[i-j][1], t_array[i][2] - t_array[i-j][2]);
-                    relative_t = q_array[i-j].inverse() * relative_t;
-                    double relative_yaw = euler_array[i][0] - euler_array[i-j][0];
+                    Vector3d euler_conncected = Utility::R2ypr(q_array[i-j].toRotationMatrix()); //计算相邻关键帧的欧拉角（yaw, pitch, roll
+                    Vector3d relative_t(t_array[i][0] - t_array[i-j][0], t_array[i][1] - t_array[i-j][1], t_array[i][2] - t_array[i-j][2]); //计算当前关键帧相对于相邻关键帧的相对平移向量
+                    relative_t = q_array[i-j].inverse() * relative_t; //将相对平移向量 relative_t 转换到相邻关键帧的坐标系下
+                    double relative_yaw = euler_array[i][0] - euler_array[i-j][0]; //计算当前关键帧相对于相邻关键帧的相对 yaw 角度
                     ceres::CostFunction* cost_function = FourDOFError::Create( relative_t.x(), relative_t.y(), relative_t.z(),
                                                    relative_yaw, euler_conncected.y(), euler_conncected.z());
                     problem.AddResidualBlock(cost_function, NULL, euler_array[i-j],
@@ -493,7 +520,7 @@ void PoseGraph::optimize4DoF()
                                             t_array[i]);
                   }
                 }
-
+                // 如果将loop edge关闭，那么全局优化将不会起到任何作用，因为在序列中，迭代初始值已经是最优解😄
                 //add loop edge
 
                 if((*it)->has_loop)
@@ -502,7 +529,7 @@ void PoseGraph::optimize4DoF()
                     int connected_index = getKeyFrame((*it)->loop_index)->local_index;
                     Vector3d euler_conncected = Utility::R2ypr(q_array[connected_index].toRotationMatrix());
                     Vector3d relative_t;
-                    relative_t = (*it)->getLoopRelativeT();
+                    relative_t = (*it)->getLoopRelativeT(); // 这是通过pnp更新过的相对平移向量
                     double relative_yaw = (*it)->getLoopRelativeYaw();
                     ceres::CostFunction* cost_function = FourDOFWeightError::Create( relative_t.x(), relative_t.y(), relative_t.z(),
                                                                                relative_yaw, euler_conncected.y(), euler_conncected.z());
@@ -541,6 +568,11 @@ void PoseGraph::optimize4DoF()
                 Matrix3d tmp_r = tmp_q.toRotationMatrix();
                 (*it)-> updatePose(tmp_t, tmp_r);
 
+                Vector3d vio_t;
+                Matrix3d vio_r;
+                (*it)->getVioPose(vio_t, vio_r);
+                printf("Pose to Vio_pose distance: %f\n, rotation distance: %f\n", (tmp_t - vio_t).norm(), Utility::R2ypr(tmp_r * vio_r.transpose()).norm());
+
                 if ((*it)->index == cur_index)
                     break;
                 i++;
@@ -560,7 +592,7 @@ void PoseGraph::optimize4DoF()
             //cout << "yaw drift " << yaw_drift << endl;
 
             it++;
-            for (; it != keyframelist.end(); it++)
+            for (; it != keyframelist.end(); it++) //更新剩余关键帧的位姿
             {
                 Vector3d P;
                 Matrix3d R;

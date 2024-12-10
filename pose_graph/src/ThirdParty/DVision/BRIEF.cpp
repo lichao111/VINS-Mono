@@ -36,6 +36,9 @@ BRIEF::~BRIEF()
 
 // ---------------------------------------------------------------------------
 
+/**
+ * 计算brief描述子
+ */
 void BRIEF::compute(const cv::Mat &image,
     const std::vector<cv::KeyPoint> &points,
     vector<bitset> &descriptors,
