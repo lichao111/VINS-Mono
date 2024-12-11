@@ -169,26 +169,33 @@ class IntegrationBase
      
     }
 
+    /**
+     * 计算IMU预积分的残差(计算两个关键帧之间的实际状态变化和预积分状态变化之间的差异，来生成一个15维的残差向量)
+     */
     Eigen::Matrix<double, 15, 1> evaluate(const Eigen::Vector3d &Pi, const Eigen::Quaterniond &Qi, const Eigen::Vector3d &Vi, const Eigen::Vector3d &Bai, const Eigen::Vector3d &Bgi,
                                           const Eigen::Vector3d &Pj, const Eigen::Quaterniond &Qj, const Eigen::Vector3d &Vj, const Eigen::Vector3d &Baj, const Eigen::Vector3d &Bgj)
     {
         Eigen::Matrix<double, 15, 1> residuals;
+        // O_P = 0, O_R = 3, O_V = 6, O_BA = 9, O_BG = 12
+        //其中各增量关于 bias 的 Jacobian 可从公式(16)的大 Jacobian 中的相应位置获得。
+        Eigen::Matrix3d dp_dba = jacobian.block<3, 3>(O_P, O_BA); // dp/dba
+        Eigen::Matrix3d dp_dbg = jacobian.block<3, 3>(O_P, O_BG); // dp/dbg
 
-        Eigen::Matrix3d dp_dba = jacobian.block<3, 3>(O_P, O_BA);
-        Eigen::Matrix3d dp_dbg = jacobian.block<3, 3>(O_P, O_BG);
+        Eigen::Matrix3d dq_dbg = jacobian.block<3, 3>(O_R, O_BG); // dq/dba
 
-        Eigen::Matrix3d dq_dbg = jacobian.block<3, 3>(O_R, O_BG);
+        Eigen::Matrix3d dv_dba = jacobian.block<3, 3>(O_V, O_BA); // dv/dba
+        Eigen::Matrix3d dv_dbg = jacobian.block<3, 3>(O_V, O_BG); // dv/dbg
 
-        Eigen::Matrix3d dv_dba = jacobian.block<3, 3>(O_V, O_BA);
-        Eigen::Matrix3d dv_dbg = jacobian.block<3, 3>(O_V, O_BG);
-
-        Eigen::Vector3d dba = Bai - linearized_ba;
+        //当每次迭代时,我们得到一个新的 bias,又得根据公式(5)重新对第 k 帧和第 k+1 帧之间的 IMU 预积分,非常耗时。这里假设预积分的变化量与 bias 是线性关系,可以写成:
+        Eigen::Vector3d dba = Bai - linearized_ba; // 偏置的变化量
         Eigen::Vector3d dbg = Bgi - linearized_bg;
 
-        Eigen::Quaterniond corrected_delta_q = delta_q * Utility::deltaQ(dq_dbg * dbg);
-        Eigen::Vector3d corrected_delta_v = delta_v + dv_dba * dba + dv_dbg * dbg;
-        Eigen::Vector3d corrected_delta_p = delta_p + dp_dba * dba + dp_dbg * dbg;
+        // 修正预积分的预测量
+        Eigen::Quaterniond corrected_delta_q = delta_q * Utility::deltaQ(dq_dbg * dbg); // 矫正后的姿态变化量， 对预积分得到的 delta_q 进行矫正
+        Eigen::Vector3d corrected_delta_v = delta_v + dv_dba * dba + dv_dbg * dbg;      // 矫正后的速度变化量， 对预积分得到的 delta_v 进行矫正
+        Eigen::Vector3d corrected_delta_p = delta_p + dp_dba * dba + dp_dbg * dbg;      // 矫正后的位置变化量， 对预积分得到的 delta_p 进行矫正
 
+        //此处的残差就是论文中的公式（24）
         residuals.block<3, 1>(O_P, 0) = Qi.inverse() * (0.5 * G * sum_dt * sum_dt + Pj - Pi - Vi * sum_dt) - corrected_delta_p;
         residuals.block<3, 1>(O_R, 0) = 2 * (corrected_delta_q.inverse() * (Qi.inverse() * Qj)).vec();
         residuals.block<3, 1>(O_V, 0) = Qi.inverse() * (G * sum_dt + Vj - Vi) - corrected_delta_v;

@@ -11,7 +11,7 @@ ProjectionFactor::ProjectionFactor(const Eigen::Vector3d &_pts_i, const Eigen::V
     Eigen::Vector3d tmp(0, 0, 1);
     if(a == tmp)
         tmp << 1, 0, 0;
-    b1 = (tmp - a * (a.transpose() * tmp)).normalized();
+    b1 = (tmp - a * (a.transpose() * tmp)).normalized(); // 构建正交积
     b2 = a.cross(b1);
     tangent_base.block<1, 3>(0, 0) = b1.transpose();
     tangent_base.block<1, 3>(1, 0) = b2.transpose();
@@ -32,6 +32,7 @@ bool ProjectionFactor::Evaluate(double const *const *parameters, double *residua
 
     double inv_dep_i = parameters[3][0];
 
+    // 将第i frame下的3D点转到第j frame坐标系下
     Eigen::Vector3d pts_camera_i = pts_i / inv_dep_i;
     Eigen::Vector3d pts_imu_i = qic * pts_camera_i + tic;
     Eigen::Vector3d pts_w = Qi * pts_imu_i + Pi;
@@ -70,7 +71,7 @@ bool ProjectionFactor::Evaluate(double const *const *parameters, double *residua
             0, 1. / dep_j, -pts_camera_j(1) / (dep_j * dep_j);
 #endif
         reduce = sqrt_info * reduce;
-
+        // jacobians的求解参照https://zhuanlan.zhihu.com/p/61733458
         if (jacobians[0])
         {
             Eigen::Map<Eigen::Matrix<double, 2, 7, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);

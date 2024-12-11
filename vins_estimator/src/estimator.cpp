@@ -491,6 +491,7 @@ void Estimator::solveOdometry()
     }
 }
 
+//将所有参数装填到double数组类型中
 void Estimator::vector2double()
 {
     for (int i = 0; i <= WINDOW_SIZE; i++)
@@ -680,22 +681,22 @@ void Estimator::optimization()
     ceres::Problem problem;
     ceres::LossFunction *loss_function;
     //loss_function = new ceres::HuberLoss(1.0);
-    loss_function = new ceres::CauchyLoss(1.0);
+    loss_function = new ceres::CauchyLoss(1.0); //Cauchy 损失函数在残差较小时与平方损失函数相似，但在残差较大时增长速度减缓，从而减小异常值的影响。通过这种方式，Cauchy 损失函数可以提高优化过程的鲁棒性
     for (int i = 0; i < WINDOW_SIZE + 1; i++)
     {
         ceres::LocalParameterization *local_parameterization = new PoseLocalParameterization();
-        problem.AddParameterBlock(para_Pose[i], SIZE_POSE, local_parameterization);
+        problem.AddParameterBlock(para_Pose[i], SIZE_POSE, local_parameterization); // para_pose = [x, y, z, qx, qy, qz, qw]
         problem.AddParameterBlock(para_SpeedBias[i], SIZE_SPEEDBIAS); // para_speedbias = [v, ba, bg]
     }
     for (int i = 0; i < NUM_OF_CAM; i++)
     {
         ceres::LocalParameterization *local_parameterization = new PoseLocalParameterization();
-        problem.AddParameterBlock(para_Ex_Pose[i], SIZE_POSE, local_parameterization);
+        problem.AddParameterBlock(para_Ex_Pose[i], SIZE_POSE, local_parameterization); // cam与imu之间的外参
         //是否估计外参矩阵
         if (!ESTIMATE_EXTRINSIC)
         {
             ROS_DEBUG("fix extinsic param");
-            problem.SetParameterBlockConstant(para_Ex_Pose[i]);
+            problem.SetParameterBlockConstant(para_Ex_Pose[i]); //如果不估计外参矩阵，则将其固定
         }
         else
             ROS_DEBUG("estimate extinsic param");
@@ -708,7 +709,7 @@ void Estimator::optimization()
     }
 
     TicToc t_whole, t_prepare;
-    vector2double();
+    vector2double(); //将所有参数装填到double数组类型中
 
     if (last_marginalization_info)
     {
@@ -721,7 +722,7 @@ void Estimator::optimization()
     for (int i = 0; i < WINDOW_SIZE; i++)
     {
         int j = i + 1;
-        if (pre_integrations[j]->sum_dt > 10.0)
+        if (pre_integrations[j]->sum_dt > 10.0) //如果两帧之间的时间间隔大于10s，则不加入imu因子， 认为是不正常的
             continue;
         IMUFactor* imu_factor = new IMUFactor(pre_integrations[j]);
         problem.AddResidualBlock(imu_factor, NULL, para_Pose[i], para_SpeedBias[i], para_Pose[j], para_SpeedBias[j]);
@@ -814,13 +815,13 @@ void Estimator::optimization()
 
     ceres::Solver::Options options;
 
-    options.linear_solver_type = ceres::DENSE_SCHUR;
-    //options.num_threads = 2;
-    options.trust_region_strategy_type = ceres::DOGLEG;
-    options.max_num_iterations = NUM_ITERATIONS;
+    options.linear_solver_type = ceres::DENSE_SCHUR; //制定线性求解器的类型
+    //options.num_threads = 2; //使用两个线程进行优化
+    options.trust_region_strategy_type = ceres::DOGLEG; //信赖域策略的类型
+    options.max_num_iterations = NUM_ITERATIONS; //指定最大迭代次数
     //options.use_explicit_schur_complement = true;
     //options.minimizer_progress_to_stdout = true;
-    //options.use_nonmonotonic_steps = true;
+    //options.use_nonmonotonic_steps = true; //使用非单调步长，这可能有助于跳出局部最优解
     if (marginalization_flag == MARGIN_OLD)
         options.max_solver_time_in_seconds = SOLVER_TIME * 4.0 / 5.0;
     else

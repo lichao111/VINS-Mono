@@ -16,6 +16,7 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
     IMUFactor(IntegrationBase* _pre_integration):pre_integration(_pre_integration)
     {
     }
+    // Evaluate函数负责计算给定参数下的残差和雅可比矩阵
     virtual bool Evaluate(double const *const *parameters, double *residuals, double **jacobians) const
     {
 
@@ -56,14 +57,15 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
             pre_integration->repropagate(Bai, Bgi);
         }
 #endif
-
+        // 在优化迭代的过程中, 预积分值是不变的, 输入的状态值会被不断的更新, 然后不断的调用evaluate()计算更新后的IMU残差
+        // 同时这也说明了预积分的好处，如果不转换到相邻两帧的相对位姿，而是使用相对于世界系的位姿，则积分值随着优化的进行会不断变化，从而造成优化的计算量巨大
         Eigen::Map<Eigen::Matrix<double, 15, 1>> residual(residuals);
         residual = pre_integration->evaluate(Pi, Qi, Vi, Bai, Bgi,
                                             Pj, Qj, Vj, Baj, Bgj);
 
         Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::LLT<Eigen::Matrix<double, 15, 15>>(pre_integration->covariance.inverse()).matrixL().transpose();
         //sqrt_info.setIdentity();
-        residual = sqrt_info * residual;
+        residual = sqrt_info * residual; // 真正的优化项其实是Mahalanobis 距离，Mahalanobis距离其实相当于一个残差加权，协方差大的加权小，协方差小的加权大，着重优化那些比较确定的残差。
 
         if (jacobians)
         {
@@ -82,7 +84,9 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
                 //std::cout << pre_integration->jacobian << std::endl;
 ///                ROS_BREAK();
             }
-
+            /**
+             * 此处jacobian的更新参见https://blog.csdn.net/qq_43247439/article/details/107216889
+             */
             if (jacobians[0])
             {
                 Eigen::Map<Eigen::Matrix<double, 15, 7, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);
