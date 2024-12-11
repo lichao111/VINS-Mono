@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(vins_estimator)
-
-set(CMAKE_BUILD_TYPE "Debug")
+# 如果设置为Debug模式，会导致Ceres求解器无法收敛，因为运算速度太慢
+set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_FLAGS "-std=c++11")
 #-DEIGEN_USE_MKL_ALL")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
