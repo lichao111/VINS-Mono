@@ -829,7 +829,8 @@ void Estimator::optimization()
     TicToc t_solver;
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
-    //cout << summary.BriefReport() << endl;
+    cout << summary.BriefReport() << endl; //限制了最大迭代次数和时间后， 目前的收敛的概率大约50%
+    cout << summary.FullReport() << endl;  //可以查看cost的下降情况
     ROS_DEBUG("Iterations : %d", static_cast<int>(summary.iterations.size()));
     ROS_DEBUG("solver costs: %f", t_solver.toc());
 
